@@ -1,390 +1,432 @@
-class RationalApproximator {
+class GraFracApp {
     constructor() {
-        this.numberInput = document.getElementById('numberInput');
-        this.randomBtn = document.getElementById('randomBtn');
-        this.resultsDiv = document.getElementById('results');
-        this.sortType = 'error'; // 'error', 'denominator', or 'comprehensive'
-        
-        this.setupEventListeners();
+        this.storageKey = 'grafrac.history.v2';
+        this.state = {
+            value: null,
+            parsedLabel: '',
+            maxDen: 1000,
+            limit: 18,
+            sort: 'recommended',
+            reducedOnly: true,
+            candidates: [],
+            continuedFraction: [],
+            best: null,
+        };
+
+        this.els = {
+            valueInput: document.getElementById('valueInput'),
+            randomBtn: document.getElementById('randomBtn'),
+            clearBtn: document.getElementById('clearBtn'),
+            maxDenInput: document.getElementById('maxDenInput'),
+            limitInput: document.getElementById('limitInput'),
+            sortSelect: document.getElementById('sortSelect'),
+            strictReducedOnly: document.getElementById('strictReducedOnly'),
+            statusText: document.getElementById('statusText'),
+            historyList: document.getElementById('historyList'),
+            clearHistoryBtn: document.getElementById('clearHistoryBtn'),
+            bestCard: document.getElementById('bestCard'),
+            bestFraction: document.getElementById('bestFraction'),
+            bestMeta: document.getElementById('bestMeta'),
+            copyFractionBtn: document.getElementById('copyFractionBtn'),
+            copyLatexBtn: document.getElementById('copyLatexBtn'),
+            copyShareLinkBtn: document.getElementById('copyShareLinkBtn'),
+            continuedFractionText: document.getElementById('continuedFractionText'),
+            errorInsightText: document.getElementById('errorInsightText'),
+            resultGrid: document.getElementById('resultGrid'),
+        };
+
+        this.bindEvents();
+        this.restoreFromUrl();
+        this.renderHistory();
+        this.update();
     }
-    
-    setupEventListeners() {
-        this.numberInput.addEventListener('input', () => {
-            this.updateResults();
+
+    bindEvents() {
+        this.els.valueInput.addEventListener('input', () => this.update(true));
+        this.els.maxDenInput.addEventListener('input', () => this.update());
+        this.els.limitInput.addEventListener('input', () => this.update());
+        this.els.sortSelect.addEventListener('change', () => this.update());
+        this.els.strictReducedOnly.addEventListener('change', () => this.update());
+
+        this.els.randomBtn.addEventListener('click', () => {
+            this.els.valueInput.value = Math.random().toFixed(10);
+            this.update(true);
         });
-        
-        this.randomBtn.addEventListener('click', () => {
-            this.generateRandomNumber();
+
+        this.els.clearBtn.addEventListener('click', () => {
+            this.els.valueInput.value = '';
+            this.update();
+        });
+
+        document.querySelectorAll('.chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                this.els.valueInput.value = chip.dataset.value || '';
+                this.update(true);
+            });
+        });
+
+        this.els.clearHistoryBtn.addEventListener('click', () => {
+            localStorage.removeItem(this.storageKey);
+            this.renderHistory();
+            this.toast('履歴を消去しました');
+        });
+
+        this.els.copyFractionBtn.addEventListener('click', () => {
+            if (!this.state.best) return;
+            this.copyText(this.formatFraction(this.state.best.numerator, this.state.best.denominator), '分数をコピーしたよ！');
+        });
+
+        this.els.copyLatexBtn.addEventListener('click', () => {
+            if (!this.state.best) return;
+            const t = '\\frac{' + this.state.best.numerator + '}{' + this.state.best.denominator + '}';
+            this.copyText(t, 'LaTeXをコピーしたよ！');
+        });
+
+        this.els.copyShareLinkBtn.addEventListener('click', () => {
+            const u = new URL(window.location.href);
+            this.copyText(u.toString(), '共有リンクをコピーしたよ！');
         });
     }
-    
-    generateRandomNumber() {
-        const randomNum = Math.random(); // 0 to 1
-        this.numberInput.value = randomNum.toFixed(10); // 小数点10位まで
-        this.updateResults();
+
+    restoreFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const value = String(params.get('v') || '').trim();
+        const maxDen = Number(params.get('d') || '');
+        const limit = Number(params.get('n') || '');
+        const sort = String(params.get('s') || '').trim();
+
+        if (value) this.els.valueInput.value = value;
+        if (Number.isFinite(maxDen) && maxDen >= 8) this.els.maxDenInput.value = String(Math.min(9999, Math.round(maxDen)));
+        if (Number.isFinite(limit) && limit >= 5) this.els.limitInput.value = String(Math.min(50, Math.round(limit)));
+        if (['recommended', 'error', 'denominator', 'precisionThenShorter'].includes(sort)) this.els.sortSelect.value = sort;
     }
-    
-    updateResults() {
-        const inputValue = this.numberInput.value.trim();
-        
-        if (!inputValue || isNaN(inputValue)) {
-            this.displayNoResults();
+
+    update(pushHistory) {
+        const parsed = this.parseInput(this.els.valueInput.value);
+        this.state.maxDen = this.clampInt(this.els.maxDenInput.value, 8, 9999, 1000);
+        this.state.limit = this.clampInt(this.els.limitInput.value, 5, 50, 18);
+        this.state.sort = this.els.sortSelect.value;
+        this.state.reducedOnly = !!this.els.strictReducedOnly.checked;
+        this.els.maxDenInput.value = String(this.state.maxDen);
+        this.els.limitInput.value = String(this.state.limit);
+
+        if (!parsed.ok) {
+            this.state.value = null;
+            this.state.candidates = [];
+            this.state.best = null;
+            this.state.continuedFraction = [];
+            this.renderInvalid(parsed.message);
+            this.syncUrl();
             return;
         }
-        
-        const number = parseFloat(inputValue);
-        const approximations = this.findRationalApproximations(number);
-        this.displayResults(approximations, number);
+
+        this.state.value = parsed.value;
+        this.state.parsedLabel = parsed.label;
+        const result = this.buildCandidates(parsed.value, this.state.maxDen, this.state.reducedOnly);
+        this.state.candidates = this.sortCandidates(result.candidates, this.state.sort).slice(0, this.state.limit);
+        this.state.best = this.state.candidates[0] || null;
+        this.state.continuedFraction = result.continuedFraction;
+
+        if (pushHistory) {
+            this.pushHistory(parsed.label);
+        }
+
+        this.renderValid();
+        this.syncUrl();
     }
-    
-    /**
-     * 小数を既約分数で近似するアルゴリズム
-     * 
-     * このアルゴリズムは2つの手法を組み合わせて最適な既約分数を見つける ：
-     * 
-     * 手法1: 連分数展開による近似
-     * - 数学的に最も効率的な近似を提供
-     * - 小さな分母で高精度な近似が可能
-     * 
-     * 手法2: 総当たり探索による近似
-     * - 小さい分母から順番に試して、既約分数のみを選別
-     * - 連分数で見つからない組み合わせも発見
-     */
-    findRationalApproximations(x, maxDenominator = 1000) {
-        const results = [];
-        
-        // === 手法1: 連分数展開による高精度近似 ===
-        // 連分数は数値を [a0; a1, a2, a3, ...] の形で表現
-        // 例: π ≈ [3; 7, 15, 1, 292, ...] → 3 + 1/(7 + 1/(15 + 1/(1 + ...)))
-        const continuedFraction = this.toContinuedFraction(x, 10);
-        const convergents = this.getConvergents(continuedFraction);
-        
-        // 連分数の収束値（convergents）は自動的に既約分数になる性質がある
-        for (const [num, den] of convergents) {
-            if (den <= maxDenominator) {
-                const error = Math.abs(x - num / den);
-                results.push({ numerator: num, denominator: den, error: error });
+
+    parseInput(raw) {
+        const text = String(raw || '').trim();
+        if (!text) return { ok: false, message: '値を入力すると候補を表示します。' };
+
+        let value = NaN;
+        if (/^-?\d+(?:\.\d+)?\s*%$/.test(text)) {
+            value = Number(text.replace('%', '')) / 100;
+        } else if (/^-?\d+\s*\/\s*-?\d+$/.test(text)) {
+            const parts = text.split('/').map((p) => Number(p.trim()));
+            if (parts[1] === 0) {
+                return { ok: false, message: '0で割る分数は入力できません。' };
             }
-        }
-        
-        // === 手法2: 総当たり探索による補完的な近似 ===
-        // 連分数では見つからない可能性のある組み合わせをカバー
-        for (let den = 1; den <= 100; den++) {
-            const num = Math.round(x * den);
-            
-            // === 既約分数の判定プロセス ===
-            // ステップ1: 分子と分母の最大公約数(GCD)を計算
-            // ステップ2: GCDが1の場合のみ既約分数として採用
-            // 
-            // 理由: 既約分数とは分子と分母に1以外の共通因数を持たない分数
-            // 例: 6/9 は GCD(6,9)=3 なので既約分数ではない → 2/3 に約分される
-            // 例: 2/3 は GCD(2,3)=1 なので既約分数
-            if (this.gcd(Math.abs(num), den) === 1) { // 既約分数のみ
-                const error = Math.abs(x - num / den);
-                const exists = results.some(r => 
-                    r.numerator === num && r.denominator === den
-                );
-                if (!exists) {
-                    results.push({ numerator: num, denominator: den, error: error });
-                }
-            }
+            value = parts[0] / parts[1];
+        } else {
+            value = Number(text);
         }
 
-        // 分母×精度スコアを計算
-        results.forEach(result => {
-            result.comprehensiveScore = this.calculateComprehensiveScore(result.error, result.denominator);
-            result.lengthPrecisionScore = this.calculateLengthPrecisionScore(result.numerator, result.denominator, result.error);
-            result.precisionRank = this.getPrecisionRank(result.error);
-            result.totalLen = Math.abs(result.numerator).toString().length + Math.abs(result.denominator).toString().length;
-        });
+        if (!Number.isFinite(value)) {
+            return { ok: false, message: '数値・割合(%)・分数(a/b)の形式で入力してください。' };
+        }
+        if (value < 0 || value > 1) {
+            return { ok: false, message: 'GraFrac は 0〜1 の範囲に特化しています。' };
+        }
+        return { ok: true, value: value, label: text };
+    }
 
-        // ソート方法に応じてソート
-        if (this.sortType === 'error') {
-            results.sort((a, b) => a.error - b.error);
-        } else if (this.sortType === 'denominator') {
-            results.sort((a, b) => a.denominator - b.denominator);
-        } else if (this.sortType === 'comprehensive') {
-            results.sort((a, b) => b.comprehensiveScore - a.comprehensiveScore); // 高いスコア順
-        } else if (this.sortType === 'lengthPrecision') {
-            results.sort((a, b) => b.lengthPrecisionScore - a.lengthPrecisionScore); // 高いスコア順
-        } else if (this.sortType === 'precisionThenShorter') {
-            // 精度（有効数字）降順、同じなら合計文字数昇順
-            results.sort((a, b) => {
-                if (b.precisionRank !== a.precisionRank) {
-                    return b.precisionRank - a.precisionRank;
-                }
-                return a.totalLen - b.totalLen;
+    buildCandidates(x, maxDenominator, reducedOnly) {
+        const map = new Map();
+        const add = (n, d) => {
+            if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return;
+            let num = Math.round(n);
+            let den = Math.round(d);
+            if (den <= 0 || den > maxDenominator) return;
+            const g = this.gcd(Math.abs(num), Math.abs(den));
+            const rn = num / g;
+            const rd = den / g;
+            if (reducedOnly && g !== 1) {
+                // Keep reduced-only policy strict by skipping non-primitive input directly.
+                // Reduced pair is still produced via other generation paths.
+            }
+            const key = rn + '/' + rd;
+            if (map.has(key)) return;
+            const decimal = rn / rd;
+            const error = Math.abs(x - decimal);
+            const precision = this.getPrecisionRank(error);
+            const totalLen = String(Math.abs(rn)).length + String(Math.abs(rd)).length;
+            const simplicity = 1 / (1 + Math.log10(rd + 1));
+            const recommendScore = (precision * 0.62) + (simplicity * 5.2) - (Math.log10(error + 1e-16) * -0.08);
+            map.set(key, {
+                numerator: rn,
+                denominator: rd,
+                decimal: decimal,
+                error: error,
+                precision: precision,
+                totalLen: totalLen,
+                recommendScore: recommendScore,
             });
-        }
+        };
 
-        return results.slice(0, 15); // 上位15個まで表示
-    }
+        const continuedFraction = this.toContinuedFraction(x, 16);
+        const convergents = this.getConvergents(continuedFraction);
+        convergents.forEach(([n, d]) => add(n, d));
 
-    // 有効数字による精度ランク（大きいほど精度が高い）
-    getPrecisionRank(error) {
-        if (error === 0) return 10;
-        const significantDigits = Math.floor(-Math.log10(error));
-        return significantDigits;
-    }
-
-    /**
-     * 分母・分子の合計文字数と有効数字による精度を合わせたスコア
-     * - 精度スコア: 有効数字が多いほど高い（最大10点）
-     * - 分母・分子の合計文字数が少ないほど高い（最大10点、最小2点程度）
-     * - スコア = 誤差スコア × (1 + 2 * exp(分母文字数+分子文字数))
-     */
-    calculateLengthPrecisionScore(numerator, denominator, error) {
-        // 精度スコア（有効数字ベース）
-        let precisionScore;
-        if (error === 0) {
-            precisionScore = 10;
-        } else {
-            const significantDigits = Math.floor(-Math.log10(error));
-            if (significantDigits <= 1) {
-                precisionScore = 1;
-            } else if (significantDigits === 2) {
-                precisionScore = 3;
-            } else if (significantDigits === 3) {
-                precisionScore = 5;
-            } else if (significantDigits === 4) {
-                precisionScore = 8;
-            } else if (significantDigits === 5) {
-                precisionScore = 9;
-            } else {
-                precisionScore = 10;
+        // Semi-convergents improve candidate quality between convergents.
+        for (let i = 1; i < convergents.length; i += 1) {
+            const prev = convergents[i - 1];
+            const curr = convergents[i];
+            if (!prev || !curr) continue;
+            for (let t = 1; t <= 4; t += 1) {
+                add(prev[0] + t * curr[0], prev[1] + t * curr[1]);
             }
         }
-        // 分母・分子の合計文字数
-        const numLen = Math.abs(numerator).toString().length;
-        const denLen = Math.abs(denominator).toString().length;
-        const totalLen = numLen + denLen;
-        // スコア計算（合計文字数が小さいほど高い）
-        const score = precisionScore / (1 + 2 * Math.exp(totalLen - 4)); // 5文字以下で高スコア、10文字以上で低スコア
-        return score;
-    }
-    
-    calculateComprehensiveScore(error, denominator) {
-        // 有効数字ベースの誤差評価
-        let errorScore;
-        if (error === 0) {
-            errorScore = 10; // 完全一致
-        } else {
-            // 誤差の有効桁数を計算（先頭の0を除く）
-            const significantDigits = Math.floor(-Math.log10(error));
-            
-            if (significantDigits <= 1) {
-                // 1桁以下：極めて低評価
-                errorScore = 1;
-            } else if (significantDigits === 2) {
-                // 2桁一致：低評価
-                errorScore = 3;
-            } else if (significantDigits === 3) {
-                // 3桁一致：少し評価上がる
-                errorScore = 5;
-            } else if (significantDigits === 4) {
-                // 4桁一致：80点レベル
-                errorScore = 8;
-            } else if (significantDigits === 5) {
-                // 5桁一致：90点レベル
-                errorScore = 9;
-            } else {
-                // 6桁以上一致：ほぼ100点
-                errorScore = 10;
-            }
+
+        const bruteLimit = Math.min(maxDenominator, 360);
+        for (let d = 1; d <= bruteLimit; d += 1) {
+            const center = x * d;
+            const n0 = Math.floor(center);
+            add(n0, d);
+            add(n0 + 1, d);
+            add(Math.round(center), d);
         }
-        
-        // 分母スコアを調整
-        let denominatorScore = 10 / (1 + Math.exp((denominator - 50) / 10));
-        
-        // 掛け算による分母×精度（どちらか一方が低いと全体が低くなる）
-        const weightedScore = (errorScore * denominatorScore) / 10; // 10で割って0-10の範囲に正規化
-        
-        return weightedScore;
+
+        const candidates = Array.from(map.values()).filter((c) => c.numerator >= 0 && c.numerator <= c.denominator);
+        return {
+            candidates,
+            continuedFraction,
+        };
     }
-    
+
+    sortCandidates(candidates, mode) {
+        const list = candidates.slice();
+        if (mode === 'error') {
+            list.sort((a, b) => a.error - b.error || a.denominator - b.denominator);
+            return list;
+        }
+        if (mode === 'denominator') {
+            list.sort((a, b) => a.denominator - b.denominator || a.error - b.error);
+            return list;
+        }
+        if (mode === 'precisionThenShorter') {
+            list.sort((a, b) => {
+                if (b.precision !== a.precision) return b.precision - a.precision;
+                if (a.totalLen !== b.totalLen) return a.totalLen - b.totalLen;
+                return a.error - b.error;
+            });
+            return list;
+        }
+        list.sort((a, b) => b.recommendScore - a.recommendScore || a.error - b.error);
+        return list;
+    }
+
+    renderInvalid(message) {
+        this.els.statusText.textContent = message;
+        this.els.statusText.className = 'status-text error';
+        this.els.bestCard.hidden = true;
+        this.els.continuedFractionText.textContent = '-';
+        this.els.errorInsightText.textContent = '-';
+        this.els.resultGrid.innerHTML = '';
+    }
+
+    renderValid() {
+        const best = this.state.best;
+        const n = this.state.candidates.length;
+        this.els.statusText.textContent = n + '件の候補を表示中 (' + this.state.parsedLabel + ' → ' + this.state.value.toFixed(10) + ')';
+        this.els.statusText.className = 'status-text ok';
+
+        if (!best) {
+            this.els.bestCard.hidden = true;
+            this.els.resultGrid.innerHTML = '';
+            return;
+        }
+
+        this.els.bestCard.hidden = false;
+        this.els.bestFraction.textContent = this.formatFraction(best.numerator, best.denominator);
+        this.els.bestMeta.textContent = '誤差 ' + best.error.toExponential(4) + ' | 精度ランク ' + best.precision + '桁 | 分母 ' + best.denominator;
+
+        const cfText = this.state.continuedFraction.length
+            ? '[' + this.state.continuedFraction[0] + '; ' + this.state.continuedFraction.slice(1).join(', ') + ']'
+            : '-';
+        this.els.continuedFractionText.textContent = cfText;
+        this.els.errorInsightText.textContent = '最良候補との差: ' + Math.abs(this.state.value - best.decimal).toExponential(6);
+
+        this.els.resultGrid.innerHTML = this.state.candidates.map((c, idx) => {
+            return ''
+                + '<article class="candidate" data-n="' + c.numerator + '" data-d="' + c.denominator + '">'
+                + '<div class="candidate-top"><span class="candidate-rank">#' + (idx + 1) + '</span><span class="candidate-rank">d=' + c.denominator + '</span></div>'
+                + '<div class="candidate-frac">' + this.formatFraction(c.numerator, c.denominator) + '</div>'
+                + '<div class="candidate-line">≈ <strong>' + c.decimal.toFixed(10) + '</strong></div>'
+                + '<div class="candidate-line">誤差: ' + c.error.toExponential(3) + '</div>'
+                + '<div class="candidate-line">精度: ' + c.precision + '桁 / 文字数: ' + c.totalLen + '</div>'
+                + '</article>';
+        }).join('');
+
+        this.els.resultGrid.querySelectorAll('.candidate').forEach((el) => {
+            el.addEventListener('click', () => {
+                const nn = Number(el.dataset.n);
+                const dd = Number(el.dataset.d);
+                this.copyText(this.formatFraction(nn, dd), '候補をコピーしたよ！');
+            });
+        });
+    }
+
+    formatFraction(n, d) {
+        return n + '/' + d;
+    }
+
+    syncUrl() {
+        const params = new URLSearchParams();
+        const value = String(this.els.valueInput.value || '').trim();
+        if (value) params.set('v', value);
+        params.set('d', String(this.state.maxDen));
+        params.set('n', String(this.state.limit));
+        params.set('s', String(this.state.sort));
+        const next = window.location.pathname + (params.toString() ? ('?' + params.toString()) : '');
+        history.replaceState(null, '', next);
+    }
+
+    copyText(text, okMessage) {
+        navigator.clipboard.writeText(String(text || '')).then(() => {
+            this.toast(okMessage || 'コピーしたよ！');
+        }).catch(() => {
+            this.toast('コピーに失敗しました');
+        });
+    }
+
+    toast(message) {
+        if (window.TethUI && typeof window.TethUI.showToast === 'function') {
+            window.TethUI.showToast(message);
+            return;
+        }
+        console.info('[GraFrac]', message);
+    }
+
+    pushHistory(label) {
+        const key = String(label || '').trim();
+        if (!key) return;
+        let list = this.readHistory();
+        list = [key].concat(list.filter((v) => v !== key)).slice(0, 12);
+        localStorage.setItem(this.storageKey, JSON.stringify(list));
+        this.renderHistory();
+    }
+
+    readHistory() {
+        try {
+            const list = JSON.parse(localStorage.getItem(this.storageKey) || '[]');
+            return Array.isArray(list) ? list.map((v) => String(v || '').trim()).filter(Boolean) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    renderHistory() {
+        const list = this.readHistory();
+        if (!list.length) {
+            this.els.historyList.innerHTML = '<span class="history-item" aria-disabled="true">まだありません</span>';
+            return;
+        }
+        this.els.historyList.innerHTML = list.map((v) => '<button type="button" class="history-item" data-value="' + this.escapeHtml(v) + '">' + this.escapeHtml(v) + '</button>').join('');
+        this.els.historyList.querySelectorAll('.history-item').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                this.els.valueInput.value = btn.dataset.value || '';
+                this.update();
+            });
+        });
+    }
+
+    clampInt(value, min, max, fallback) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(min, Math.min(max, Math.round(n)));
+    }
+
+    // Continued fraction core reused from previous implementation.
     toContinuedFraction(x, maxTerms) {
         const result = [];
         let current = Math.abs(x);
-        
-        for (let i = 0; i < maxTerms && current !== 0; i++) {
+        for (let i = 0; i < maxTerms; i += 1) {
             const integerPart = Math.floor(current);
             result.push(integerPart);
-            current = current - integerPart;
-            
-            if (Math.abs(current) < 1e-10) break;
+            current -= integerPart;
+            if (Math.abs(current) < 1e-12) break;
             current = 1 / current;
         }
-        
-        return x < 0 ? [-result[0], ...result.slice(1)] : result;
+        return x < 0 ? [-result[0]].concat(result.slice(1)) : result;
     }
-    
+
+    // Continued fraction convergents reused from previous implementation.
     getConvergents(continuedFraction) {
         const convergents = [];
-        let h_prev2 = 0, h_prev1 = 1;
-        let k_prev2 = 1, k_prev1 = 0;
-        
+        let hPrev2 = 0;
+        let hPrev1 = 1;
+        let kPrev2 = 1;
+        let kPrev1 = 0;
         for (const a of continuedFraction) {
-            const h = a * h_prev1 + h_prev2;
-            const k = a * k_prev1 + k_prev2;
-            
+            const h = a * hPrev1 + hPrev2;
+            const k = a * kPrev1 + kPrev2;
             convergents.push([h, k]);
-            
-            h_prev2 = h_prev1;
-            h_prev1 = h;
-            k_prev2 = k_prev1;
-            k_prev1 = k;
+            hPrev2 = hPrev1;
+            hPrev1 = h;
+            kPrev2 = kPrev1;
+            kPrev1 = k;
         }
-        
         return convergents;
     }
-    
-    /**
-     * 最大公約数(Greatest Common Divisor, GCD)を計算するユークリッドの互除法
-     * 
-     * アルゴリズムの仕組み:
-     * 1. 二つの数 a, b について、a を b で割った余りを r とする
-     * 2. もし r が 0 なら、b が最大公約数
-     * 3. そうでなければ、a = b, b = r として手順1に戻る
-     * 
-     * 例: gcd(12, 8)
-     * - 12 ÷ 8 = 1 余り 4  → a=8, b=4
-     * - 8 ÷ 4 = 2 余り 0   → b=4 が最大公約数
-     * 
-     * 既約分数の判定:
-     * - 分子と分母のGCDが1なら既約分数
-     * - 例: 3/4 → gcd(3,4)=1 → 既約分数
-     * - 例: 6/8 → gcd(6,8)=2 → 既約分数ではない（3/4に約分可能）
-     */
+
     gcd(a, b) {
-        while (b !== 0) {
-            [a, b] = [b, a % b]; // 分割代入でaとbを入れ替えつつ、bに余りを代入
+        let x = Math.abs(a);
+        let y = Math.abs(b);
+        while (y !== 0) {
+            const t = x % y;
+            x = y;
+            y = t;
         }
-        return a;
-    }
-    
-    displayResults(approximations, originalNumber) {
-        if (approximations.length === 0) {
-            this.displayNoResults();
-            return;
-        }
-
-        let html = '<div id="copy-toast" style="display:none;position:fixed;top:30px;left:50%;transform:translateX(-50%);background:#27ae60;color:#fff;padding:12px 28px;border-radius:8px;font-size:16px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.15);">コピーしました！</div>';
-
-        html += '<div class="results-header">';
-        html += '<h3>近似分数候補</h3>';
-        html += '<div class="sort-buttons">';
-        html += `<button class="sort-btn ${this.sortType === 'error' ? 'active' : ''}" onclick="app.changeSortType('error')">誤差順</button>`;
-        html += `<button class="sort-btn ${this.sortType === 'denominator' ? 'active' : ''}" onclick="app.changeSortType('denominator')">分母順</button>`;
-        html += `<button class="sort-btn ${this.sortType === 'comprehensive' ? 'active' : ''}" onclick="app.changeSortType('comprehensive')">分母×精度順</button>`;
-        html += `<button class="sort-btn ${this.sortType === 'lengthPrecision' ? 'active' : ''}" onclick="app.changeSortType('lengthPrecision')">桁数×精度順</button>`;
-        html += `<button class="sort-btn ${this.sortType === 'precisionThenShorter' ? 'active' : ''}" onclick="app.changeSortType('precisionThenShorter')">ゴルフ順</button>`;
-        html += '</div>';
-        html += '</div>';
-
-        if (this.sortType === 'error' || this.sortType === 'precisionThenShorter') {
-            // ゴルフ順: 精度ごとにグループ化して枠で表示
-            // グループ化
-            const groups = {};
-            approximations.forEach((approx, index) => {
-                const rank = approx.precisionRank;
-                if (!groups[rank]) groups[rank] = [];
-                groups[rank].push({ ...approx, index });
-            });
-            // 精度ランク降順で表示
-            const sortedRanks = Object.keys(groups)
-                .map(Number)
-                .sort((a, b) => b - a);
-
-            html += '<div class="golf-groups">';
-            sortedRanks.forEach(rank => {
-                html += `<div class="golf-group"><div class="golf-group-title">${rank}桁一致</div><div class="results-grid">`;
-                groups[rank].forEach(approx => {
-                    const { numerator, denominator, error, totalLen, index } = approx;
-                    const decimalValue = (numerator / denominator).toFixed(6);
-                    const latexString = `\\frac{${numerator}}{${denominator}}`;
-                    html += `<div class="result-item" data-latex="${latexString.replace(/"/g, '&quot;')}" title="クリックでLaTeXコピー">`;
-                    html += `<div class="fraction" id="fraction-${index}"></div>`;
-                    html += `<div class="decimal">≈ ${decimalValue}</div>`;
-                    html += `<div class="error">誤差: ${error.toExponential(3)}</div>`;
-                    html += `<div class="score">合計文字数: ${totalLen}</div>`;
-                    html += '</div>';
-                });
-                html += '</div></div>';
-            });
-            html += '</div>';
-        } else {
-            html += '<div class="results-grid">';
-            approximations.forEach((approx, index) => {
-                const { numerator, denominator, error, comprehensiveScore, lengthPrecisionScore, precisionRank, totalLen } = approx;
-                const decimalValue = (numerator / denominator).toFixed(6);
-                const latexString = `\\frac{${numerator}}{${denominator}}`;
-                html += `<div class="result-item" data-latex="${latexString.replace(/"/g, '&quot;')}" title="クリックでLaTeXコピー">`;
-                html += `<div class="fraction" id="fraction-${index}"></div>`;
-                html += `<div class="decimal">≈ ${decimalValue}</div>`;
-                html += `<div class="error">誤差: ${error.toExponential(3)}</div>`;
-                if (this.sortType === 'comprehensive') {
-                    html += `<div class="score">分母×精度: ${comprehensiveScore.toFixed(2)}</div>`;
-                }
-                if (this.sortType === 'lengthPrecision') {
-                    html += `<div class="score">桁数×精度: ${lengthPrecisionScore.toFixed(2)}</div>`;
-                }
-                if (this.sortType === 'precisionThenShorter') {
-                    html += `<div class="score">精度: ${precisionRank}桁, 合計文字数: ${totalLen}</div>`;
-                }
-                html += '</div>';
-            });
-            html += '</div>';
-        }
-        this.resultsDiv.innerHTML = html;
-
-        // KaTeXで各分数を個別にレンダリング
-        approximations.forEach((approx, index) => {
-            const { numerator, denominator } = approx;
-            const latexString = `\\frac{${numerator}}{${denominator}}`;
-            const fractionElement = document.getElementById('fraction-' + index);
-            if (fractionElement) {
-                katex.render(latexString, fractionElement);
-            }
-        });
-
-        // クリックでLaTeXコピー機能＋トースト表示
-        const toast = document.getElementById('copy-toast');
-        document.querySelectorAll('.result-item').forEach(item => {
-            item.addEventListener('click', (e) => {
-                const latex = item.getAttribute('data-latex');
-                if (latex) {
-                    navigator.clipboard.writeText(latex).then(() => {
-                        if (toast) {
-                            toast.style.display = 'block';
-                            setTimeout(() => {
-                                toast.style.display = 'none';
-                            }, 1000);
-                        }
-                        item.classList.add('copied');
-                        item.title = "コピーしました！";
-                        setTimeout(() => {
-                            item.classList.remove('copied');
-                            item.title = "クリックでLaTeXコピー";
-                        }, 1000);
-                    });
-                }
-                e.stopPropagation();
-            });
-        });
+        return x || 1;
     }
 
-    changeSortType(newSortType) {
-        this.sortType = newSortType;
-        this.updateResults();
+    getPrecisionRank(error) {
+        if (error === 0) return 16;
+        if (!Number.isFinite(error)) return 0;
+        return Math.max(0, Math.floor(-Math.log10(error)));
     }
-    
-    displayNoResults() {
-        this.resultsDiv.innerHTML = '<div class="no-results">数値を入力してください</div>';
+
+    escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 }
 
-// アプリケーション初期化
-let app;
-document.addEventListener('DOMContentLoaded', () => {
-    app = new RationalApproximator();
+document.addEventListener('DOMContentLoaded', function () {
+    window.graFracApp = new GraFracApp();
 });
