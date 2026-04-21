@@ -1,23 +1,132 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>有理数近似アプリ</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <title>GraFrac - ライブ分数近似</title>
+    <meta name="description" content="0〜1の値をライブで分数候補に変換。連分数アルゴリズムを核に、精度・短さ・分母制約で比較できる GraFrac。">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&family=Noto+Sans+JP:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../assets/style/ecosystem-shell.css">
     <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-    <div class="container">
-        <h1>有理数近似</h1>
-        <div class="input-section">
-            <input type="text" id="numberInput" placeholder="小数を入力してください（例: 3.14159）">
-            <button id="randomBtn">ランダム数値生成</button>
+    <header class="site-header">
+        <div class="container header-inner">
+            <h1 class="header-title">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M5 6h14" />
+                    <path d="M5 18h14" />
+                    <path d="M9 6v12" />
+                    <path d="M15 6v12" />
+                    <path d="M3.5 12h3" />
+                    <path d="M17.5 12h3" />
+                </svg>
+                GraFrac
+            </h1>
+            <a class="home-link" href="../">ホームへ戻る</a>
         </div>
-        <div id="results" class="results-section"></div>
-    </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    </header>
+
+    <main>
+        <section class="hero">
+            <div class="container">
+                <h2>入力するだけで、最適な分数候補をライブ表示。</h2>
+                <p>連分数展開を軸に、既約分数探索を組み合わせて近似候補を生成。精度だけでなく「扱いやすさ」も含めて比較します。</p>
+            </div>
+        </section>
+
+        <section class="section">
+            <div class="container app-grid">
+                <aside class="panel input-panel">
+                    <label class="field-label" for="valueInput">値 (0〜1)</label>
+                    <input id="valueInput" class="form-input" inputmode="decimal" autocomplete="off" placeholder="例: 0.6180339887 / 61.8% / 55/89" aria-describedby="valueHelp">
+                    <p id="valueHelp" class="helper">自動更新です。ボタンは不要。`61.8%` や `55/89` 形式も入力できます。</p>
+
+                    <div class="row-actions">
+                        <button id="randomBtn" type="button" class="btn">ランダム</button>
+                        <button id="clearBtn" type="button" class="btn">クリア</button>
+                    </div>
+
+                    <div class="chip-row" role="group" aria-label="サンプル入力">
+                        <button type="button" class="chip" data-value="0.3333333333">1/3</button>
+                        <button type="button" class="chip" data-value="0.6180339887">黄金比-1</button>
+                        <button type="button" class="chip" data-value="0.7071067812">√2/2</button>
+                        <button type="button" class="chip" data-value="0.1428571429">1/7</button>
+                        <button type="button" class="chip" data-value="0.875">7/8</button>
+                    </div>
+
+                    <div class="control-grid">
+                        <label class="control-item" for="maxDenInput">
+                            <span>最大分母</span>
+                            <input id="maxDenInput" class="form-input" type="number" min="8" max="9999" value="1000">
+                        </label>
+                        <label class="control-item" for="limitInput">
+                            <span>表示件数</span>
+                            <input id="limitInput" class="form-input" type="number" min="5" max="50" value="18">
+                        </label>
+                        <label class="control-item" for="sortSelect">
+                            <span>並び順</span>
+                            <select id="sortSelect" class="form-input">
+                                <option value="recommended">おすすめ順</option>
+                                <option value="error">誤差順</option>
+                                <option value="denominator">分母順</option>
+                                <option value="precisionThenShorter">ゴルフ順</option>
+                            </select>
+                        </label>
+                        <label class="control-item toggle-item" for="strictReducedOnly">
+                            <span>既約分数のみ</span>
+                            <input id="strictReducedOnly" type="checkbox" checked>
+                        </label>
+                    </div>
+
+                    <div id="statusText" class="status-text" aria-live="polite">値を入力すると候補を表示します。</div>
+
+                    <div class="history-panel">
+                        <div class="history-head">
+                            <h3>最近の入力</h3>
+                            <button id="clearHistoryBtn" type="button" class="mini-link">消去</button>
+                        </div>
+                        <div id="historyList" class="history-list"></div>
+                    </div>
+                </aside>
+
+                <section class="panel result-panel">
+                    <div id="bestCard" class="best-card" hidden>
+                        <div class="best-badge">BEST MATCH</div>
+                        <div class="best-main">
+                            <div class="best-fraction" id="bestFraction">-</div>
+                            <div class="best-meta" id="bestMeta">-</div>
+                        </div>
+                        <div class="best-actions">
+                            <button type="button" class="btn" id="copyFractionBtn">分数をコピー</button>
+                            <button type="button" class="btn" id="copyLatexBtn">LaTeXをコピー</button>
+                            <button type="button" class="btn" id="copyShareLinkBtn">共有リンク</button>
+                        </div>
+                    </div>
+
+                    <div class="insight-grid">
+                        <article class="insight-card">
+                            <h3>連分数展開</h3>
+                            <p id="continuedFractionText" class="mono">-</p>
+                        </article>
+                        <article class="insight-card">
+                            <h3>誤差情報</h3>
+                            <p id="errorInsightText" class="mono">-</p>
+                        </article>
+                    </div>
+
+                    <div id="resultGrid" class="result-grid"></div>
+                </section>
+            </div>
+        </section>
+    </main>
+
+    <script src="../assets/scripts/core/ecosystem-feedback.js"></script>
     <script src="script.js"></script>
 </body>
+
 </html>
